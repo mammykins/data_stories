@@ -1,0 +1,196 @@
+---
+title: "exploring_data_workflow_classifier"
+author: "Matthew Gregory"
+date: "4 March 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Sensible Workflow for hour long data exploration
+
+Remember to tell a story...
+
+## Read the data in
+
+```{r message=FALSE}
+library(tidyverse)
+library(GGally)  #  splom
+library(extracat)
+library(vcd)  #  double decker
+
+d <- read_csv("https://archive.ics.uci.edu/ml/machine-learning-databases/pima-indians-diabetes/pima-indians-diabetes.data", col_names = c("times_preg", "glucose", "bp", "triceps",
+              "insulin", "bmi", "pedigree", "age", "outcome"))
+
+   # 1. Number of times pregnant
+   # 2. Plasma glucose concentration a 2 hours in an oral glucose tolerance test
+   # 3. Diastolic blood pressure (mm Hg)
+   # 4. Triceps skin fold thickness (mm)
+   # 5. 2-Hour serum insulin (mu U/ml)
+   # 6. Body mass index (weight in kg/(height in m)^2)
+   # 7. Diabetes pedigree function
+   # 8. Age (years)
+   # 9. Class variable (0 or 1)
+```
+
+## Look at the data
+
+```{r}
+glimpse(d)
+```
+
+### Inspect distributions
+
+```{r}
+hist(d$times_preg)
+```
+
+## Combining different views
+
+We can use an ensemble of plots to help tell the story of the data.
+
+```{r message=FALSE}
+p0 <- ggplot(d) + geom_bar(binwidth = 1) + ylab("") #  + govstyle::theme_gov()
+p1 <- p0 + aes(x = age)
+p2 <- p0 + aes(x = times_preg) + xlab("Number of times pregnant")
+k <- ggplot(d) + geom_histogram() #  + govstyle::theme_gov()
+p3 <- k + aes(glucose)
+p4 <- k + aes(bp)
+p5 <- k + aes(triceps)
+p6 <- k + aes(bmi)
+p7 <- k + aes(pedigree)
+p8 <- k + aes(insulin)
+library(gridExtra)
+grid.arrange(arrangeGrob(p1, p2, ncol = 2, widths = c(3, 3)),
+             arrangeGrob(p3, p4, p5, p6, p7, p8, ncol = 6),
+             nrow = 2, heights = c(1.25, 1))
+```
+
+Some zeroes for variables that seem counterintuitive, could be checked. e.g. BMI of 0.
+
+### Doubledecker
+
+Good for categorical data or variables with few levels (or discrete data like previous times pregnant). 
+
+```{r}
+require(vcd)
+vcd::doubledecker(outcome ~ times_preg, data = d,
+                  gp = gpar(fill = c("grey90", "green")),
+                  spacing = spacing_equal(0))
+```
+
+
+## Are there any NAs? If yes how are they distributed?
+
+```{r eval=FALSE}
+if_else(sum(!complete.cases(d)) == 0,
+        true = print("No NAs"),
+        false = extracat::visna(d, sort = "b")
+        )
+
+```
+
+## Normalise and tidy variables
+
+Do we want to normalise, do we want the tree to be easily interpretable? e.g. on a laminated piece of card?
+
+```{r}
+# names(d)
+# inspect data, any need normalising? or logicising or 
+to_normalise <- names(select(d, -outcome))
+factorise  <- c()
+logicise <- c()
+
+library(scales)
+
+# load data
+d_pima_norm <- d %>%
+  na.omit() %>%
+  mutate_each_(funs(rescale), to_normalise)
+
+#  Perhaps it doesn't need normalising? What do I do with my future data?
+sample_frac(d_pima_norm, 0.3) %>%
+GGally::ggpairs(to_normalise,
+        mapping = ggplot2::aes(col = outcome),
+    lower = list(continuous = wrap("density", alpha = 0.3), combo = "box"),
+    upper = list(continuous = wrap("points", alpha = 0.1), combo = wrap("dot", alpha = 0.3)),
+    title = "Diabetes status",
+    axisLabels = "show")
+```
+
+## Classifier
+
+## Convert into classification problem if required
+
+If the outcome is numeric, why not convert it into a factor? This only makes sense in some situations such as [student pass or fail](http://www.machinegurning.com/rstats/student-performance/).
+
+```{r eval = FALSE}
+mydata$final <- NULL
+ 
+mydata$final <- factor(
+  ifelse(mydata$G3 >= 10, 1, 0), 
+  labels = c("fail", "pass")
+  ) 
+```
+
+We proceed and think about how the user might employ our model. Is it OK as a classification problem? Can we normalise the data to improve model performance?
+
+Works better with rescaled data.
+
+```{r}
+require(FFTrees)
+#Build the classifier
+perf_fft <- FFTrees(formula = outcome ~.,
+                         data = d_pima_norm,
+                    train.p = 0.8)
+
+plot(perf_fft, 
+     main = "Diabetes diagnosis",
+     decision.names = c("Normal", "Diabetic")
+     ,
+     tree = "best.train"  #  Look at the trade-off and decide on your tree.
+)
+
+```
+
+## Interpreting the tree
+
+The top row shows a high diabetes rate in the sample!  
+
+If glucose is above the scaled score of 0.63 of the training sample then predict diabetic, if not and they are below the 0.13 of age, predict no diabetes (i.e. if they are young).  
+
+* The classification table on the left side shows the relationship between tree decisions and the truth. CR (Correct Rejection) and H (Hit) are correct decisions. MI (Miss) and FA (False-alarm) are incorrect decisions.  
+
+* The next three levels show cumulative tree performance in terms of Specificity, Hit Rate, D-prime, and AUC (area under the curve).  
+
+* Finally, the plot on the right shows an ROC curve comparing the performance of all trees in the FFTrees object. Additionally, the performance of logistic regression (blue) and CART (red) are shown. The tree plotted in the middle row is highlighted in a solid green color (i the case above, tree #5).
+
+## Visualise cue accuracies
+
+```{r}
+showcues(perf_fft,
+         main = "Diabetes cue accuracy")
+```
+
+Wow. None of the cues did very well on their own. Good performing cues should be in the top left hand of the graph (i.e.; low false alarm rate and high hit rate). It looks like the best cue was glucose, seems to be some correlation between the other cues.
+
+## Test data
+
+```{r}
+plot(perf_fft, 
+     main = "Diabetes diagnosis",
+     decision.names = c("Normal", "Diabetic")
+     ,
+     data = "test",
+     tree = "best.train"  #  Look at the trade-off and decide on your tree.
+)
+```
+
+
+## Feature selection
+
+Using this data or additional data to collect.
+Any ideas? Is it in the family?
+
