@@ -1,0 +1,188 @@
+---
+title: "Simple Linear Regression"
+author: "Matthew Gregory"
+date: "20 March 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Sensible Workflow for hour long data exploration
+
+Remember to tell a story...
+
+### Common questions linear regression can answer
+
+* is there a relationship between x and y?  
+* how strong is the relationship between x and y?  
+* which variables contribute to y?  
+* how accurately can we estimate the effect of each variable on y?  
+* how accurately can predict future y?  
+* is the relationship linear?  
+* is there any interaction effects between variables on y?  
+
+Here we investigate the effect of physical attributes of a Yaught on its hydrodynamics (I think).  
+
+## Read the data in
+
+```{r message=FALSE}
+library(tidyverse)
+library(GGally)  #  splom
+library(extracat)
+library(vcd)  #  double decker
+
+varslist <- c("long", "prism", "len_disp", "beam_dra", "len_beam", "froude", "outcome")
+d <- read_delim("https://archive.ics.uci.edu/ml/machine-learning-databases/00243/yacht_hydrodynamics.data", col_names = varslist, delim = " ")
+
+
+```
+
+### Look at the data
+
+The Delft data set comprises 308 full-scale experiments, which were performed at the Delft Ship Hydromechanics Laboratory for that purpose.   
+
+### Attribute Information
+
+Variations concern hull geometry coefficients and the Froude number: 
+
+1. Longitudinal position of the center of buoyancy, adimensional. 
+2. Prismatic coefficient, adimensional. 
+3. Length-displacement ratio, adimensional. 
+4. Beam-draught ratio, adimensional. 
+5. Length-beam ratio, adimensional. 
+6. Froude number, adimensional. 
+
+The measured variable is the residuary resistance per unit weight of displacement: 
+
+7. Residuary resistance per unit weight of displacement, adimensional. 
+
+```{r}
+glimpse(d)
+```
+
+### Inspect distributions
+
+Heavy skew, not normal. We should probably transform before modelling.
+
+```{r}
+hist(d$outcome)
+```
+
+
+## Combining different views
+
+We can use an ensemble of plots to help tell the story of the data.
+
+```{r message=FALSE}
+
+k <- ggplot(d) + geom_histogram() #  + govstyle::theme_gov()
+p1 <- k + aes(x = long)
+p2 <- k + aes(x = log(outcome)) + xlab("Log tranformed outcome")
+p3 <- k + aes(prism)
+p4 <- k + aes(len_disp)
+p5 <- k + aes(beam_dra)
+p6 <- k + aes(len_beam)
+p7 <- k + aes(froude)
+
+library(gridExtra)
+grid.arrange(arrangeGrob(p1, p2, ncol = 2, widths = c(3, 3)),
+             arrangeGrob(p3, p4, p5, p6, p7, ncol = 5),
+             nrow = 2, heights = c(1.25, 1))
+```
+
+## Are there any NAs? If yes how are they distributed?
+
+```{r eval=FALSE}
+extracat::visna(d, sort = "b")
+
+```
+
+We drop them, assume missing at random. Faulty assumption! 
+
+## Normalise and tidy variables
+
+Do we want to normalise, do we want the tree to be easily interpretable? e.g. on a laminated piece of card?
+
+```{r}
+# names(d)
+# inspect data, any need normalising? or logicising or 
+to_normalise <- names(select(d, -outcome))
+factorise  <- c()
+logicise <- c()
+
+library(scales)
+
+# load data
+d_y_norm <- d %>%
+  na.omit() %>%
+  mutate_each_(funs(rescale), to_normalise)
+
+#  Perhaps it doesn't need normalising? What do I do with my future data?
+sample_frac(d_y_norm, 0.3) %>%
+GGally::ggpairs(to_normalise,
+        mapping = ggplot2::aes(col = outcome),
+    lower = list(continuous = wrap("density", alpha = 0.3), combo = "box"),
+    upper = list(continuous = wrap("points", alpha = 0.1), combo = wrap("dot", alpha = 0.3)),
+    title = "Yachting",
+    axisLabels = "show")
+```
+
+Given this output this looks like a tough learning problem! Linear regression is going to struggle.
+
+## Linear regression (fancy)
+
+Instead we opt for regression gradient boosting.
+
+Prepare a test and training data set.
+
+```{r}
+## 75% of the sample size
+smp_size <- floor(0.75 * nrow(d_y_norm))
+
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(d_y_norm)), size = smp_size)
+
+train <- d_y_norm[train_ind, ]
+test <- d_y_norm[-train_ind, ]
+```
+
+
+```{r}
+library(mlr)
+
+regr.task <- makeRegrTask(id = "yct", data = train, target = "outcome")
+regr.task
+
+## Regression gradient boosting machine, specify hyperparameters via a list
+regr.lrn <- makeLearner("regr.gbm", par.vals = list(n.trees = 500, interaction.depth = 3))
+
+```
+
+### Training
+
+```{r}
+mod <- train(regr.lrn, regr.task)
+mod
+```
+
+### Validation or test
+
+```{r}
+task.pred <- predict(mod, task = regr.task, data = test)
+task.pred
+```
+
+## Visualising
+
+```{r}
+plotLearnerPrediction("regr.lm", features = "beam_dra", task = regr.task)
+```
+
+Pretty bad! Unsurprisingly.
+
+## Next steps
+
+Transform, feature engineering, different method.
